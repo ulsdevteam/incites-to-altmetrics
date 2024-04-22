@@ -51,24 +51,24 @@ type RateLimiter = governor::RateLimiter<
     governor::middleware::NoOpMiddleware<governor::clock::QuantaInstant>,
 >;
 
-async fn doi_lookup(ut: &str) -> Result<String> {
+async fn doi_lookup(uid: &str) -> Result<String> {
     lazy_static! {
         static ref CLIENT: reqwest::Client = reqwest::Client::new();
-        static ref APIKEY: String = std::env::var("WOS_APIKEY").expect("missing web of science lite api key");
-        static ref RATE_LIMITER: RateLimiter = RateLimiter::direct(Quota::per_second(NonZeroU32::new(2).unwrap()));
+        static ref APIKEY: String = std::env::var("WOS_APIKEY").expect("missing web of science starter api key");
+        static ref RATE_LIMITER: RateLimiter = RateLimiter::direct(Quota::per_second(NonZeroU32::new(5).unwrap()));
     }
-    if ut.is_empty() {
-        return Err(anyhow!("record missing UT"));
+    if uid.is_empty() {
+        return Err(anyhow!("record missing UID"));
     }
     RATE_LIMITER.until_ready().await;
     let response = CLIENT
-        .get(format!("https://wos-api.clarivate.com/api/woslite/id/{ut}?=&databaseId=WOK&count=100&firstRecord=1"))
+        .get(format!("https://api.clarivate.com/apis/wos-starter/documents/{uid}"))
         .header("X-ApiKey", &*APIKEY)
         .send()
         .await?
         .text()
         .await?;
-    Ok(json::parse(&response)?["Data"][0]["Other"]["Identifier.Doi"][0]
+    Ok(json::parse(&response)?["identifiers"]["doi"]
         .as_str()
         .context("response missing DOI")?
         .to_owned())
