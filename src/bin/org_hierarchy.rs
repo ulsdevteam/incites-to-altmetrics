@@ -1,6 +1,9 @@
-use std::{collections::HashMap, io::{Write, stdout}};
 use anyhow::{Context, Result};
 use itertools::Itertools;
+use std::{
+    collections::HashMap,
+    io::{stdout, Write},
+};
 
 struct Org {
     name: String,
@@ -31,18 +34,16 @@ fn main() -> Result<()> {
     }
 
     let mut writer = csv::Writer::from_writer(stdout());
-    writer.write_record([
-        "Top Level",
-        "Level 1",
-        "Level 2",
-        "Level 3",
-        "Level 4",
-        "Level 5",
-    ])?;
+    writer.write_record(["Top Level", "Level 1", "Level 2", "Level 3", "Level 4", "Level 5"])?;
     build_hierarchy(&mut writer, &orgs, &orgs[&top_level_id.unwrap()], &mut Vec::new())
 }
 
-fn build_hierarchy(writer: &mut csv::Writer<impl Write>, all_orgs: &HashMap<String, Org>, org: &Org, state: &mut Vec<String>) -> Result<()> {
+fn build_hierarchy(
+    writer: &mut csv::Writer<impl Write>,
+    all_orgs: &HashMap<String, Org>,
+    org: &Org,
+    state: &mut Vec<String>,
+) -> Result<()> {
     static EMPTY: String = String::new();
     state.push(org.name.clone());
     writer.write_record(state.iter().pad_using(6, |_| &EMPTY))?;
@@ -50,6 +51,6 @@ fn build_hierarchy(writer: &mut csv::Writer<impl Write>, all_orgs: &HashMap<Stri
         let child_org = &all_orgs[child];
         build_hierarchy(writer, all_orgs, child_org, state)?;
     }
-    state.pop();    
+    state.pop();
     Ok(())
 }

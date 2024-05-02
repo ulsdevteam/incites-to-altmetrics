@@ -2,7 +2,8 @@ use anyhow::{anyhow, Context, Result};
 use governor::Quota;
 use itertools::Itertools;
 use lazy_static::lazy_static;
-use std::{collections::HashMap, env::args, io::stdout, num::NonZeroU32, path::Path};
+use std::{collections::HashMap, env::args, io::stdout, num::NonZeroU32, path::Path, time::Duration};
+use tokio::time::sleep;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -60,16 +61,21 @@ async fn doi_lookup(uid: &str) -> Result<String> {
     if uid.is_empty() {
         return Err(anyhow!("record missing UID"));
     }
-    RATE_LIMITER.until_ready().await;
-    let response = CLIENT
-        .get(format!("https://api.clarivate.com/apis/wos-starter/documents/{uid}"))
-        .header("X-ApiKey", &*APIKEY)
-        .send()
-        .await?
-        .text()
-        .await?;
-    Ok(json::parse(&response)?["identifiers"]["doi"]
-        .as_str()
-        .context("response missing DOI")?
-        .to_owned())
+    loop {
+        RATE_LIMITER.until_ready().await;
+        let response = CLIENT
+            .get(format!("https://api.clarivate.com/apis/wos-starter/v1/documents/{uid}"))
+            .header("X-ApiKey", &*APIKEY)
+            .send()
+            .await?
+            .text()
+            .await?;
+        let json = json::parse(&response)?;
+        if json["message"] == "API rate limit exceeded" {
+            eprintln!("daily rate limit reached. see you tomorrow");
+            sleep(Duration::from_secs(86400)).await;
+        } else {
+            return Ok(json["identifiers"]["doi"].as_str().context("response missing DOI")?.to_owned());
+        }
+    }
 }
