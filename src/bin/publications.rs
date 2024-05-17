@@ -1,9 +1,8 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result};
 use governor::Quota;
-use itertools::Itertools;
+use itertools::{join, Itertools};
 use lazy_static::lazy_static;
-use std::{collections::HashMap, env::args, io::stdout, num::NonZeroU32, path::Path, time::Duration};
-use tokio::time::sleep;
+use std::{collections::HashMap, env::args, fmt::Display, io::stdout, num::NonZeroU32, path::Path};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -13,25 +12,21 @@ async fn main() -> Result<()> {
     let mut reader = csv::Reader::from_path(&res_file)?;
     let mut writer = csv::Writer::from_writer(stdout());
     writer.write_record(["Author", "Email", "Department", "DOI"])?;
-    for record in reader.records() {
-        let record = record?;
-        let doi = match doi_lookup(&record[4]).await {
-            Ok(doi) => doi,
-            Err(err) => {
-                eprintln!("{err}");
-                eprintln!("{record:?}");
-                continue;
+    for batch in &reader.records().flatten().filter(|r| !r[4].is_empty()).chunks(50) {
+        let records = batch.collect_vec();
+        let dois = doi_batch_lookup(records.iter().map(|r| &r[4])).await?;
+        for record in records {
+            if let Some(doi) = dois.get(&record[4]) {
+                writer.write_record([
+                    &format!("{}, {}", &record[2], &record[1]),
+                    &record[6],
+                    &orgs[&record[3]],
+                    &doi,
+                ])?;
+                writer.flush()?;
             }
-        };
-        writer.write_record([
-            &format!("{}, {}", &record[2], &record[1]),
-            &record[6],
-            &orgs[&record[3]],
-            &doi,
-        ])?;
-        writer.flush()?;
+        }
     }
-
     Ok(())
 }
 
@@ -52,30 +47,27 @@ type RateLimiter = governor::RateLimiter<
     governor::middleware::NoOpMiddleware<governor::clock::QuantaInstant>,
 >;
 
-async fn doi_lookup(uid: &str) -> Result<String> {
-    lazy_static! {
-        static ref CLIENT: reqwest::Client = reqwest::Client::new();
-        static ref APIKEY: String = std::env::var("WOS_APIKEY").expect("missing web of science starter api key");
-        static ref RATE_LIMITER: RateLimiter = RateLimiter::direct(Quota::per_second(NonZeroU32::new(5).unwrap()));
-    }
-    if uid.is_empty() {
-        return Err(anyhow!("record missing UID"));
-    }
-    loop {
-        RATE_LIMITER.until_ready().await;
-        let response = CLIENT
-            .get(format!("https://api.clarivate.com/apis/wos-starter/v1/documents/{uid}"))
-            .header("X-ApiKey", &*APIKEY)
-            .send()
-            .await?
-            .text()
-            .await?;
-        let json = json::parse(&response)?;
-        if json["message"] == "API rate limit exceeded" {
-            eprintln!("daily rate limit reached. see you tomorrow");
-            sleep(Duration::from_secs(86400)).await;
-        } else {
-            return Ok(json["identifiers"]["doi"].as_str().context("response missing DOI")?.to_owned());
+lazy_static! {
+    static ref CLIENT: reqwest::Client = reqwest::Client::new();
+    static ref APIKEY: String = std::env::var("WOS_APIKEY").expect("missing web of science starter api key");
+    static ref RATE_LIMITER: RateLimiter = RateLimiter::direct(Quota::per_second(NonZeroU32::new(5).unwrap()));
+}
+
+async fn doi_batch_lookup(uids: impl IntoIterator<Item = impl Display>) -> Result<HashMap<String, String>> {
+    let query = format!("UT=({})", join(uids, " "));
+    RATE_LIMITER.until_ready().await;
+    let response = CLIENT
+        .get("https://api.clarivate.com/apis/wos-starter/v1/documents")
+        .query(&[("limit", "50"), ("q", &query)])
+        .header("X-ApiKey", &*APIKEY)
+        .send()
+        .await?;
+    let json = json::parse(&response.text().await?)?;
+    let mut map = HashMap::new();
+    for hit in json["hits"].members() {
+        if let Some(doi) = hit["identifiers"]["doi"].as_str() {
+            map.insert(hit["uid"].as_str().unwrap().to_owned(), doi.to_owned());
         }
     }
+    Ok(map)
 }
