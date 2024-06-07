@@ -12,7 +12,7 @@ async fn main() -> Result<()> {
     let mut reader = csv::Reader::from_path(&res_file)?;
     let mut writer = csv::Writer::from_writer(stdout());
     writer.write_record(["Author", "Email", "Department", "DOI"])?;
-    for batch in &reader.records().flatten().filter(|r| !r[4].is_empty()).chunks(50) {
+    for batch in &reader.records().flatten().filter(|r| !r[4].is_empty()).chunks(BATCH_SIZE) {
         let records = batch.collect_vec();
         let dois = doi_batch_lookup(records.iter().map(|r| &r[4])).await?;
         for record in records {
@@ -53,12 +53,14 @@ lazy_static! {
     static ref RATE_LIMITER: RateLimiter = RateLimiter::direct(Quota::per_second(NonZeroU32::new(5).unwrap()));
 }
 
+const BATCH_SIZE: usize = 50;
+
 async fn doi_batch_lookup(uids: impl IntoIterator<Item = impl Display>) -> Result<HashMap<String, String>> {
     let query = format!("UT=({})", join(uids, " "));
     RATE_LIMITER.until_ready().await;
     let response = CLIENT
         .get("https://api.clarivate.com/apis/wos-starter/v1/documents")
-        .query(&[("limit", "50"), ("q", &query)])
+        .query(&[("limit", BATCH_SIZE.to_string()), ("q", query)])
         .header("X-ApiKey", &*APIKEY)
         .send()
         .await?;
